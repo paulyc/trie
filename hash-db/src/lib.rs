@@ -20,8 +20,6 @@
 #[cfg(feature = "std")]
 use std::fmt::Debug;
 #[cfg(feature = "std")]
-use std::collections::HashMap;
-#[cfg(feature = "std")]
 use std::hash;
 #[cfg(feature = "std")]
 pub trait DebugIfStd: Debug {}

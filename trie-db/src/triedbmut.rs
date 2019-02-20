@@ -131,20 +131,21 @@ where
 	fn into_encoded<F, C, H>(self, mut child_cb: F) -> Vec<u8>
 	where
 		C: NodeCodec<H>,
-		F: FnMut(NodeHandle<H::Out>) -> ChildReference<H::Out>,
+		F: FnMut(NodeHandle<H::Out>, &NodeKey) -> ChildReference<H::Out>,
 		H: Hasher<Out = O>,
 	{
 		match self {
 			Node::Empty => C::empty_node(),
 			Node::Leaf(partial, value) => C::leaf_node(&partial, &value),
-			Node::Extension(partial, child) => C::ext_node(&partial, child_cb(child)),
+			Node::Extension(partial, child) => C::ext_node(&partial, child_cb(child, &partial)),
 			Node::Branch(mut children, value) => {
 				C::branch_node(
 					// map the `NodeHandle`s from the Branch to `ChildReferences`
 					children.iter_mut()
 						.map(Option::take)
-						.map(|maybe_child|
-							maybe_child.map(|child| child_cb(child))
+						.enumerate()
+						.map(|(i, maybe_child)|
+							maybe_child.map(|child| child_cb(child, &NibbleSlice::new(&[i as u8]).encoded(false)))
 						),
 					value
 				)
@@ -826,7 +827,7 @@ where
 
 		match self.storage.destroy(handle) {
 			Stored::New(node) => {
-				let encoded_root = node.into_encoded::<_, C, H>(|child| self.commit_child(child) );
+				let encoded_root = node.into_encoded::<_, C, H>(|child, k| self.commit_child(child, k));
 				trace!(target: "trie", "encoded root node: {:#x?}", &encoded_root[..]);
 
 				*self.root = self.db.insert(&encoded_root[..]);
@@ -847,17 +848,25 @@ where
 	/// case where we can fit the actual data in the `Hasher`s output type, we
 	/// store the data inline. This function is used as the callback to the
 	/// `into_encoded` method of `Node`.
-	fn commit_child(&mut self, handle: NodeHandle<H::Out>) -> ChildReference<H::Out> {
+	fn commit_child(&mut self, handle: NodeHandle<H::Out>, partial_key: &NodeKey) -> ChildReference<H::Out> {
 		match handle {
 			NodeHandle::Hash(hash) => ChildReference::Hash(hash),
 			NodeHandle::InMemory(storage_handle) => {
 				match self.storage.destroy(storage_handle) {
 					Stored::Cached(_, hash) => ChildReference::Hash(hash),
 					Stored::New(node) => {
-						let encoded = node.into_encoded::<_, C, H>(|node_handle| self.commit_child(node_handle) );
+						let encoded = {
+							let commit_child = |node_handle, key: &NodeKey| {
+								let combined = NibbleSlice::new_composed(&NibbleSlice::from_encoded(&partial_key).0, &NibbleSlice::from_encoded(key).0);
+								self.commit_child(node_handle, &combined.encoded(false))
+							};
+							node.into_encoded::<_, C, H>(commit_child)
+						};
 						if encoded.len() >= H::LENGTH {
-							let hash = self.db.insert(&encoded[..]);
-							self.hash_count +=1;
+							let hash = H::hash(&encoded);
+							let hash = C::scramble_hash(&partial_key, hash);
+							self.db.emplace(hash, DBValue::from_vec(encoded));
+							self.hash_count += 1;
 							ChildReference::Hash(hash)
 						} else {
 							// it's a small value, so we cram it into a `H::Out` and tag with length

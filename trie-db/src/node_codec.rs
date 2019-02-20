@@ -50,4 +50,9 @@ pub trait NodeCodec<H: Hasher>: Sized {
 	/// Returns an encoded branch node. Takes an iterator yielding `ChildReference<H::Out>` and an optional value
 	fn branch_node<I>(children: I, value: Option<ElasticArray128<u8>>) -> Vec<u8>
 	where I: IntoIterator<Item=Option<ChildReference<H::Out>>> + Iterator<Item=Option<ChildReference<H::Out>>>;
+
+	/// Combine node hash with partial key. This may be implemented optionally to guarantee node hash uniqueness.
+	fn scramble_hash(_partial: &[u8], hash: H::Out) -> H::Out {
+		hash
+	}
 }
